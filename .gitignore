@@ -1,0 +1,4 @@
+*.log
+.*.swp
+/cache/
+passphrase.txt
