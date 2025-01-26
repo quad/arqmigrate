@@ -91,11 +91,11 @@ func main() {
 				if err := arq7.WriteMigratedRecord(ctx, bucket, mr, ks); err != nil {
 					log.Fatal("write record:", err)
 				}
-				log.Println("Record:", mf.Name, mf.Uuid, "written")
+				log.Println("Record:", mr.CreationDate, "written")
 			} else if err != nil {
 				log.Fatalln("record exists:", err)
 			} else {
-				log.Println("Record:", mf.Name, mf.Uuid, "already exists, skipping. Use --force to override.")
+				log.Println("Record:", mr.CreationDate, "already exists, skipping. Use --force to override.")
 			}
 		}
 	}
