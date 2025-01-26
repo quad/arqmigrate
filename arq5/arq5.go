@@ -3,6 +3,7 @@ package arq5
 import (
 	"context"
 	"fmt"
+	"iter"
 	"path"
 	"strings"
 	"time"
@@ -34,37 +35,43 @@ type Exclusions struct {
 
 const PATH_BUCKETS = "buckets"
 
-func Folders(ctx context.Context, bucket *b2.Bucket, plan string, ks *object.Keyset) ([]BackupFolder, error) {
-	var folders []BackupFolder
-	paths, err := object.ListChildObjects(ctx, bucket, plan, PATH_BUCKETS)
-	if err != nil {
-		return nil, fmt.Errorf("list: %w", err)
-	}
-
-	for _, path := range paths {
-		ct, err := object.ReadObject(ctx, bucket, path)
+func Folders(ctx context.Context, bucket *b2.Bucket, plan string, ks *object.Keyset) iter.Seq2[BackupFolder, error] {
+	return func(yield func(BackupFolder, error) bool) {
+		paths, err := object.ListChildObjects(ctx, bucket, plan, PATH_BUCKETS)
 		if err != nil {
-			return nil, fmt.Errorf("read %v: %w", path, err)
+			yield(BackupFolder{}, fmt.Errorf("list: %w", err))
+			return
 		}
 
-		if string(ct[:9]) != "encrypted" {
-			return nil, fmt.Errorf("folder %v is not encrypted", path)
-		}
+		for _, path := range paths {
+			ct, err := object.ReadObject(ctx, bucket, path)
+			if err != nil {
+				yield(BackupFolder{}, fmt.Errorf("read %v: %w", path, err))
+				return
+			}
 
-		data, err := object.Decrypt(ct[9:], ks)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt %v: %w", path, err)
-		}
+			if string(ct[:9]) != "encrypted" {
+				yield(BackupFolder{}, fmt.Errorf("folder %v is not encrypted", path))
+				return
+			}
 
-		var folder BackupFolder
-		if _, err := plist.Unmarshal(data, &folder); err != nil {
-			return nil, fmt.Errorf("unmarshal %v: %w", path, err)
-		}
+			data, err := object.Decrypt(ct[9:], ks)
+			if err != nil {
+				yield(BackupFolder{}, fmt.Errorf("decrypt %v: %w", path, err))
+				return
+			}
 
-		folders = append(folders, folder)
+			var folder BackupFolder
+			if _, err := plist.Unmarshal(data, &folder); err != nil {
+				yield(BackupFolder{}, fmt.Errorf("unmarshal %v: %w", path, err))
+				return
+			}
+
+			if !yield(folder, nil) {
+				return
+			}
+		}
 	}
-
-	return folders, nil
 }
 
 const COMMIT_HEADER = "CommitV012"
@@ -98,35 +105,37 @@ type FailedFile struct {
 const PATH_BUCKETDATA = "bucketdata"
 const PATH_REFS_HEADS = "refs/heads/master"
 
-func Commits(ctx context.Context, bucket *b2.Bucket, folder BackupFolder, ks *object.Keyset) ([]Commit, error) {
-	refPath := path.Join(folder.ComputerUUID, PATH_BUCKETDATA, folder.BucketUUID, PATH_REFS_HEADS)
+func Commits(ctx context.Context, bucket *b2.Bucket, folder BackupFolder, ks *object.Keyset) iter.Seq2[Commit, error] {
+	return func(yield func(Commit, error) bool) {
+		refPath := path.Join(folder.ComputerUUID, PATH_BUCKETDATA, folder.BucketUUID, PATH_REFS_HEADS)
 
-	refData, err := object.ReadObject(ctx, bucket, refPath)
-	if err != nil {
-		return nil, fmt.Errorf("read master ref %v: %w", refPath, err)
-	}
-
-	latestCommitSHA := strings.TrimSuffix(string(refData), "Y")
-
-	commits := []Commit{}
-
-	currentSHA := latestCommitSHA
-	for currentSHA != "" {
-		commit, err := readCommit(ctx, bucket, folder.ComputerUUID, folder.BucketUUID, currentSHA, ks)
+		refData, err := object.ReadObject(ctx, bucket, refPath)
 		if err != nil {
-			return nil, fmt.Errorf("read commit %s: %w", currentSHA, err)
+			yield(Commit{}, fmt.Errorf("read master ref %v: %w", refPath, err))
+			return
 		}
 
-		commits = append(commits, *commit)
+		latestCommitSHA := strings.TrimSuffix(string(refData), "Y")
 
-		if len(commit.ParentCommits) > 0 {
-			currentSHA = commit.ParentCommits[0].Sha1
-		} else {
-			currentSHA = ""
+		currentSHA := latestCommitSHA
+		for currentSHA != "" {
+			commit, err := readCommit(ctx, bucket, folder.ComputerUUID, folder.BucketUUID, currentSHA, ks)
+			if err != nil {
+				yield(Commit{}, fmt.Errorf("read commit %s: %w", currentSHA, err))
+				return
+			}
+
+			if !yield(*commit, nil) {
+				return
+			}
+
+			if len(commit.ParentCommits) > 0 {
+				currentSHA = commit.ParentCommits[0].Sha1
+			} else {
+				currentSHA = ""
+			}
 		}
 	}
-
-	return commits, nil
 }
 
 func readCommit(ctx context.Context, bucket *b2.Bucket, computerUUID, folderUUID, sha string, ks *object.Keyset) (*Commit, error) {

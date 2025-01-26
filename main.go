@@ -48,12 +48,11 @@ func main() {
 		log.Fatalln("unlock:", err)
 	}
 
-	folders, err := arq5.Folders(ctx, bucket, *setName, ks)
-	if err != nil {
-		log.Fatalln("folders:", err)
-	}
+	for f, err := range arq5.Folders(ctx, bucket, *setName, ks) {
+		if err != nil {
+			log.Fatalln("folders:", err)
+		}
 
-	for _, f := range folders {
 		mf, err := arq7.MigrateFolder(f)
 		if err != nil {
 			log.Fatalln("migrate folder:", err)
@@ -70,12 +69,11 @@ func main() {
 			log.Println("Folder:", mf.Name, mf.Uuid, "written")
 		}
 
-		commits, err := arq5.Commits(ctx, bucket, f, ks)
-		if err != nil {
-			log.Fatalln("records:", err)
-		}
+		for c, err := range arq5.Commits(ctx, bucket, f, ks) {
+			if err != nil {
+				log.Fatalln("records:", err)
+			}
 
-		for _, c := range commits {
 			if *count <= 0 {
 				break
 			}
